@@ -1,22 +1,24 @@
 # -*- coding: utf-8 -*-
-
-# Automated non-ocular artefact removal (ANOAR) 2016, Jeff Hanna
-# Module works with MNE Python. First, globally bad channels are removed by 
-# calculating a distance-weighted absolute correlation matrix, and identifying 
-# those that correlate poorly with their neighbours. A similar matrix is then 
-# produced, but for trial*trial correlation, one for each channel, resulting in 
-# a channel*trial*trial matrix. A trial which is bad for one or a few channels 
-# can be visualised as an extreme point or points in the matrix. These can be 
-# fixed by interpolating the channel(s) in that trial only, sparing the
-# information from the rest of the channels. Globally bad trials can be
-# visualised as a line extending through the matrix, across the channel
-# dimension. These trials are removed entirely. The critical manipulation here
-# that prevents the removal of ocular artefacts is that correlations with the
-# EOG channels are subtracted from the correlations with other channels, so a
-# channel/trial which correlates poorly with neighbours, but well with EOG, is 
-# considered unproblematic and not removed, preserving it for removal at
-# another stage, e.g. with ICA.
-
+'''
+Automated non-ocular artefact removal (ANOAR) 2016, Jeff Hanna
+Module works with MNE Python. Globally bad channels are removed by 
+calculating a distance-weighted absolute correlation matrix, and identifying 
+those that correlate poorly with their neighbours. As for artefact rejection,
+the sum of squared deviance from the ERP average is calculated for each trial,
+individually for each channel. This results in a matrix of noise measurements,
+TxC, where T is the number of trials, and C is the number of channels. Noise
+levels laying outside a given threshold of a probability distribution are marked
+as bad. Because the values describe both trial and channel, individual channels
+can be marked as bad without throwing out the entire trial. The values of these
+channels are replaced by interpolation within the trial alone. Trials which have
+too many bad channels are marked as bad entirely.
+The critical manipulation here that prevents the removal of ocular artefacts 
+is that the correlation with the EOG channels for each trial-channel are calculated,
+and the noise value for that trial-channel is multiplied by 1-r² from the correlations 
+with other channels, this is effect removes the portion of the noise caused by
+parts of the signal that correlate with EOG (or any other recorded source of
+noise, EKG, etc).
+'''
 import mne
 import numpy as np
 from sklearn.linear_model import LinearRegression
@@ -69,18 +71,43 @@ def _corr_table(bcf, data):
     picks = bcf.picks
     for chan in range(bcf.chan_n):
         for neighb_idx in range(bcf.neighb_n):
-            corrs[chan,neighb_idx] = np.abs(np.corrcoef(data[picks[chan],:], data[picks[bcf.neighbs[chan][neighb_idx]],:])[0,1])
+            corrs[chan,neighb_idx] = np.abs(
+                    np.corrcoef(data[picks[chan],:], 
+                                data[picks[bcf.neighbs[chan][neighb_idx]],:])[0,1])
     return corrs
 
 def _eog_var(lgr, sig, eogs):
-    # calculates linear regression of EOG (or other) data against a signal, returns the proportion of variance in the signal they account for.
+    # calculates linear regression of EOG (or other) data against a signal, 
+    # returns the proportion of variance in the signal they account for.
     lgr.fit(eogs, sig)       
     return lgr.score(eogs, sig)
             
 
 class BadChannelFind():
+    '''
+    Class for identifying globally bad channels. Raw data are broken up into
+    time windows of specified length. A channel which has a low correlation with
+    its neighbours during a time window receives a no-vote from that time window.
+    Channels whose no-votes across all time windows reach a certain threshold are
+    determined as globally bad.
+    '''
     
     def __init__(self, picks, neighb_n=4, thresh=0.85, vote_thresh=0.25, twin_len=10):
+        '''
+        picks: channel indices to examine
+        
+        neighb_n : the n nearest neighbours of an electrode for correlation 
+        calculations
+        
+        thresh: Correlations below this result in a no-vote for that channel 
+        in that time window
+         
+        vote_thresh: channels which get a no-vote for more than this proportion
+        of the data are marked as bad
+        
+        twin_len: length in seconds of the time windows to partition the raw data
+        '''
+        
         self.picks = picks
         self.thresh = thresh
         self.vote_thresh = vote_thresh
@@ -115,9 +142,37 @@ class BadChannelFind():
         return recs
 
 class Anoar():
-    
+    '''
+    Class for identifying bad trial/channel points, bad trials, and removing
+    or repairing them, ignoring certain sources of noise (EOG) if desired.
+    '''
     def __init__(self, eog_picks, erp_trigs=[[0]], chan_thresh=0.1, p_thresh=0.999, 
                  eog_sub=1, raw_time=2):
+        '''
+        eog_picks: indices of eog (or EKG, etc) channels
+        
+        erp_trigs: trigger indices to examine. Different ERPs or groups of ERPs
+        can be considered separately. E.g. erp_trigs=[[1,2,3],[4,5]] will do two
+        processes, one with all trials with the triggers 1,2,3, and another with
+        4 and 5. This may be useful if you expect different conditions to have
+        very different ERP averages, though keep in mind that the algorithm functions
+        better with large numbers of trials.
+        
+        chan_thresh: Trials with more than this proportion of bad channels are
+        thrown out entirely.
+        
+        p_thresh: Z-scores are calculated for all values of the NxC noise matrix.
+        Values which are larger than this on the CDF of the Z distribution (i.e.
+        in the xth percentile of noisyness) are marked as bad.
+        
+        eog_sub: Whether or not to subtract the variance correlated with the channels
+        specified in eog_picks
+        
+        raw_time: in the case of dealing with raw data, how long in seconds are
+        the partitions to temporarily divide the data into.      
+        
+        '''
+        
         self.eog_picks = eog_picks
         self.erp_trigs = erp_trigs
         self.chan_thresh = chan_thresh
@@ -132,7 +187,7 @@ class Anoar():
         return self.bad_trials, self.bad_inds
         
     def viz(self):
-        
+        # visualise the results of the recommend process
         import matplotlib.pyplot as plt
         from matplotlib.colors import LogNorm
         
@@ -250,20 +305,6 @@ class Anoar():
                                      
         self.bad_trials = bad_trials
         self.bad_inds = bad_inds
-#        if doRaw:
-#            bad_sec = []
-#            raw_bad_inds = []
-#            for bad in bad_trials:
-#                bad_sec.append(tuple(
-#                        [x*self.raw_time*indata.info["sfreq"] for x in [bad,bad+1]]))
-#            self.bad_trials = bad_sec
-#            
-#            for bad_idx,bad in enumerate(bad_inds[0]):
-#                raw_bad_inds.append(tuple(
-#                        [*[x*self.raw_time*indata.info["sfreq"] for x in [bad,bad+1]],
-#                                     bad_inds[1][bad_idx]]))
-#            self.bad_inds = np.array(raw_bad_inds,dtype=int)
-
         self.ssq = ssq
         self.ssq_pure = ssq_pure
         self.disp_mat = disp_mat
@@ -294,7 +335,7 @@ class Anoar():
             bad_trial_starts = events[bad_trials,0]//sfreq
             if bad_trial_starts.size:
                 duration = np.repeat(raw_time,len(bad_trial_starts))
-                annotations = mne.Annotations(bad_trial_starts,duration,"Bad")
+                annotations = mne.Annotations(bad_trial_starts,duration,"bad")
                 raw.annotations = annotations
             
             return raw
