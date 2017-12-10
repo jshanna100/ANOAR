@@ -326,8 +326,8 @@ class Anoar():
             for trial in unique_trials:
                 bad_chs_idx = bad_inds[1][np.where(bad_inds[0]==trial)]
                 bad_chs = [raw.ch_names[x] for x in bad_chs_idx]
-                tmin = events[trial,0]
-                tmax = events[trial,0]+(raw_time*sfreq)
+                tmin = int(events[trial,0])
+                tmax = int(events[trial,0]+(raw_time*sfreq))
                 raw_crop = raw.copy().crop(tmin=tmin/sfreq,tmax=tmax/sfreq)
                 raw_crop.info["bads"] = bad_chs
                 raw_crop.interpolate_bads()
