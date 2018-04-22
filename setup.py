@@ -1,7 +1,6 @@
 from distutils.core import setup
 
 setup(name='anoar',
-      version='1.0',
       pymodules=["anoar"],
       description='Automated Non-Ocular Artefact Rejection',
       author='Jeff Hanna',
