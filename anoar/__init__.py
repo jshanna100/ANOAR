@@ -1,1 +1,1 @@
-import .anoar as anoar
+from .anoar import BadChannelFind,Anoar
